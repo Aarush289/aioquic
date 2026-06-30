@@ -1,8 +1,8 @@
 import binascii
 import contextlib
 import io
+import os
 import time
-from typing import List, Tuple
 from unittest import TestCase, skipIf
 
 from aioquic import tls
@@ -12,6 +12,7 @@ from aioquic.quic.configuration import SMALLEST_MAX_DATAGRAM_SIZE, QuicConfigura
 from aioquic.quic.connection import (
     MAX_LOCAL_CHALLENGES,
     MAX_PENDING_CRYPTO,
+    MAX_REMOTE_CHALLENGES,
     STREAM_COUNT_MAX,
     NetworkAddress,
     QuicConnection,
@@ -119,7 +120,7 @@ def create_standalone_server(self, original_destination_connection_id=bytes(8)):
     return server
 
 
-def datagram_sizes(items: List[Tuple[bytes, NetworkAddress]]) -> List[int]:
+def datagram_sizes(items: list[tuple[bytes, NetworkAddress]]) -> list[int]:
     return [len(x[0]) for x in items]
 
 
@@ -267,7 +268,7 @@ class QuicConnectionTest(TestCase):
                 break
         self.assertEqual(found_trigger, trigger)
 
-    def assertSentPackets(self, connection: QuicConnection, expected: List[int]):
+    def assertSentPackets(self, connection: QuicConnection, expected: list[int]):
         counts = [len(space.sent_packets) for space in connection._loss.spaces]
         self.assertEqual(counts, expected)
 
@@ -2011,6 +2012,20 @@ class QuicConnectionTest(TestCase):
                     f"1.2.3.{i}",
                 )
 
+    def test_remote_path_challenges_are_bounded(self):
+        with client_and_server() as (client, server):
+            challenges = [os.urandom(8) for i in range(MAX_REMOTE_CHALLENGES + 2)]
+            for challenge in challenges:
+                client._handle_path_challenge_frame(
+                    client_receive_context(client),
+                    QuicFrameType.PATH_CHALLENGE,
+                    Buffer(data=challenge),
+                )
+            self.assertEqual(
+                list(client._network_paths[0].remote_challenges),
+                challenges[0:MAX_REMOTE_CHALLENGES],
+            )
+
     def test_handle_path_response_frame_bad(self):
         with client_and_server() as (client, server):
             # server receives unsolicited PATH_RESPONSE
@@ -2288,6 +2303,20 @@ class QuicConnectionTest(TestCase):
             self.assertEqual(type(event), events.StopSendingReceived)
             self.assertEqual(event.stream_id, 0)
             self.assertEqual(event.error_code, 0x11)
+
+            self.assertIsNone(client.next_event())
+
+            # client receives another STOP_SENDING
+            client._handle_stop_sending_frame(
+                client_receive_context(client),
+                QuicFrameType.STOP_SENDING,
+                Buffer(data=b"\x00\x12"),
+            )
+
+            event = client.next_event()
+            self.assertEqual(type(event), events.StopSendingReceived)
+            self.assertEqual(event.stream_id, 0)
+            self.assertEqual(event.error_code, 0x12)
 
             self.assertIsNone(client.next_event())
 
@@ -2790,7 +2819,7 @@ class QuicConnectionTest(TestCase):
             # window too strictly as its exact value depends on the size
             # of our ACKs, which depends on the execution time.
             self.assertEqual(client._loss.bytes_in_flight, 0)
-            self.assertGreaterEqual(client._loss.congestion_window, 13530)
+            self.assertGreaterEqual(client._loss.congestion_window, 13472)
             self.assertLessEqual(client._loss.congestion_window, 13540)
 
             # artificially raise received data counter

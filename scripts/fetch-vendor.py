@@ -12,7 +12,10 @@ def get_platform():
     system = platform.system()
     machine = platform.machine()
     if system == "Linux":
-        return f"manylinux_{machine}"
+        if platform.libc_ver()[0] == "glibc":
+            return f"manylinux_{machine}"
+        else:
+            return f"musllinux_{machine}"
     elif system == "Darwin":
         # cibuildwheel sets ARCHFLAGS:
         # https://github.com/pypa/cibuildwheel/blob/5255155bc57eb6224354356df648dc42e31a0028/cibuildwheel/macos.py#L207-L220
@@ -20,7 +23,9 @@ def get_platform():
             machine = os.environ["ARCHFLAGS"].split()[1]
         return f"macosx_{machine}"
     elif system == "Windows":
-        if struct.calcsize("P") * 8 == 64:
+        if machine == "ARM64":
+            return "win_arm64"
+        elif struct.calcsize("P") * 8 == 64:
             return "win_amd64"
         else:
             return "win32"

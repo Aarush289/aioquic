@@ -6,7 +6,7 @@ import pickle
 import ssl
 import time
 from collections import deque
-from typing import BinaryIO, Callable, Deque, Dict, List, Optional, Union, cast
+from typing import BinaryIO, Callable, Deque, Optional, Union, cast
 from urllib.parse import urlparse
 
 import aioquic
@@ -57,7 +57,7 @@ class HttpRequest:
         method: str,
         url: URL,
         content: bytes = b"",
-        headers: Optional[Dict] = None,
+        headers: Optional[dict] = None,
     ) -> None:
         if headers is None:
             headers = {}
@@ -125,18 +125,19 @@ class HttpClient(QuicConnectionProtocol):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-        self.pushes: Dict[int, Deque[H3Event]] = {}
+        self.key_update = False
+        self.pushes: dict[int, Deque[H3Event]] = {}
         self._http: Optional[HttpConnection] = None
-        self._request_events: Dict[int, Deque[H3Event]] = {}
-        self._request_waiter: Dict[int, asyncio.Future[Deque[H3Event]]] = {}
-        self._websockets: Dict[int, WebSocket] = {}
+        self._request_events: dict[int, Deque[H3Event]] = {}
+        self._request_waiter: dict[int, asyncio.Future[Deque[H3Event]]] = {}
+        self._websockets: dict[int, WebSocket] = {}
 
         if self._quic.configuration.alpn_protocols[0].startswith("hq-"):
             self._http = H0Connection(self._quic)
         else:
             self._http = H3Connection(self._quic)
 
-    async def get(self, url: str, headers: Optional[Dict] = None) -> Deque[H3Event]:
+    async def get(self, url: str, headers: Optional[dict] = None) -> Deque[H3Event]:
         """
         Perform a GET request.
         """
@@ -145,7 +146,7 @@ class HttpClient(QuicConnectionProtocol):
         )
 
     async def post(
-        self, url: str, data: bytes, headers: Optional[Dict] = None
+        self, url: str, data: bytes, headers: Optional[dict] = None
     ) -> Deque[H3Event]:
         """
         Perform a POST request.
@@ -155,7 +156,7 @@ class HttpClient(QuicConnectionProtocol):
         )
 
     async def websocket(
-        self, url: str, subprotocols: Optional[List[str]] = None
+        self, url: str, subprotocols: Optional[list[str]] = None
     ) -> WebSocket:
         """
         Open a WebSocket.
@@ -205,6 +206,12 @@ class HttpClient(QuicConnectionProtocol):
             elif event.push_id in self.pushes:
                 # push
                 self.pushes[event.push_id].append(event)
+
+            # Request a key update for interoperability testing.
+            if self.key_update:
+                logger.info("Requesting key update")
+                self.request_key_update()
+                self.key_update = False
 
         elif isinstance(event, PushPromiseReceived):
             self.pushes[event.push_id] = deque()
@@ -347,11 +354,12 @@ def save_session_ticket(ticket: SessionTicket) -> None:
 
 async def main(
     configuration: QuicConfiguration,
-    urls: List[str],
+    urls: list[str],
     data: Optional[str],
     include: bool,
     output_dir: Optional[str],
     local_port: int,
+    key_update: bool,
     zero_rtt: bool,
 ) -> None:
     # parse URL
@@ -395,6 +403,7 @@ async def main(
         wait_connected=not zero_rtt,
     ) as client:
         client = cast(HttpClient, client)
+        client.key_update = key_update
 
         if parsed.scheme == "wss":
             ws = await client.websocket(urls[0], subprotocols=["chat", "superchat"])
@@ -470,6 +479,11 @@ if __name__ == "__main__":
         "--insecure",
         action="store_true",
         help="do not validate server certificate",
+    )
+    parser.add_argument(
+        "--key-update",
+        action="store_true",
+        help="request a key update",
     )
     parser.add_argument(
         "--legacy-http",
@@ -599,6 +613,7 @@ if __name__ == "__main__":
             include=args.include,
             output_dir=args.output_dir,
             local_port=args.local_port,
+            key_update=args.key_update,
             zero_rtt=args.zero_rtt,
         )
     )
